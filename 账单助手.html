@@ -240,7 +240,11 @@ function parseCSV(text) {
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const lines = text.split(/\r?\n/).filter(l => l.trim());
   const headerIdx = detectHeader(lines);
-  if (!headerIdx) throw new Error('无法识别账单格式，请确认是微信或支付宝导出的 CSV 文件');
+  if (!headerIdx) {
+    // Show diagnostic info
+    const preview = lines.slice(0, 30).map((l, i) => 'L' + i + ': ' + l.slice(0, 100)).join('\n');
+    throw new Error('未找到交易时间表头，文件前30行:\n' + preview);
+  }
   const header = lines[headerIdx];
   const source = header.includes('商户单号') ? 'wechat' :
                  header.includes('商家订单号') ? 'alipay' :
@@ -252,6 +256,7 @@ function parseCSV(text) {
     const row = source === 'wechat' ? parseWechatRow(cols, header) : parseAlipayRow(cols, header);
     if (row) rows.push(row);
   }
+  if (!rows.length) throw new Error('未解析到任何交易记录，表头: ' + header);
   return { source, rows };
 }
 
@@ -293,10 +298,10 @@ function parseWechatRow(cols, header) {
   const timeIdx = colIdx(header, ['交易时间']);
   const typeIdx = colIdx(header, ['交易类型']);
   const peerIdx = colIdx(header, ['交易对方']);
-  const goodsIdx = colIdx(header, ['商品']);
-  const inoutIdx = colIdx(header, ['收/支']);
-  const amtIdx = colIdx(header, ['金额(元)']);
-  const payIdx = colIdx(header, ['支付方式']);
+  const goodsIdx = colIdx(header, ['商品', '商品名称', '商品说明']);
+  const inoutIdx = colIdx(header, ['收/支', '收支类型']);
+  const amtIdx = colIdx(header, ['金额(元)', '金额', '收支金额(元)']);
+  const payIdx = colIdx(header, ['支付方式', '收/付款方式']);
   const type = cols[inoutIdx];
   if (type === '/' || type === '不计收支') return null;
   let amt = (cols[amtIdx] || '0').replace(/[¥￥,]/g, '').trim();
@@ -316,10 +321,10 @@ function parseWechatRow(cols, header) {
 function parseAlipayRow(cols, header) {
   const timeIdx = colIdx(header, ['交易时间']);
   const peerIdx = colIdx(header, ['交易对方']);
-  const goodsIdx = colIdx(header, ['商品说明']);
-  const inoutIdx = colIdx(header, ['收/支']);
-  const amtIdx = colIdx(header, ['金额']);
-  const payIdx = colIdx(header, ['收/付款方式']);
+  const goodsIdx = colIdx(header, ['商品说明', '商品', '商品名称']);
+  const inoutIdx = colIdx(header, ['收/支', '收支类型']);
+  const amtIdx = colIdx(header, ['金额', '金额(元)', '收支金额(元)']);
+  const payIdx = colIdx(header, ['收/付款方式', '支付方式']);
   const type = cols[inoutIdx];
   let amt = (cols[amtIdx] || '0').replace(/,/g, '').trim();
   const date = (cols[timeIdx] || '').trim();
@@ -502,6 +507,7 @@ function processFile(file) {
     }
 
     if (!text || !text.includes('交易时间')) {
+      // Show first 200 chars to help debug
       const preview = (text || '').slice(0, 200);
       toast('无法识别文件格式(tried: ' + tried.join(',') + ') 前200字符: ' + preview);
       return;
