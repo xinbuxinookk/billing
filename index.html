@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 <title>账单助手</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -86,7 +87,7 @@ section.active { display: block; }
       <div class="drop-icon">📂</div>
       <p>点击选择或拖拽 CSV 文件到此处</p>
       <p class="hint">支持微信账单、支付宝账单</p>
-      <input type="file" id="fileInput" accept=".csv" hidden>
+      <input type="file" id="fileInput" accept=".csv,.xlsx" hidden>
     </div>
     <div id="parseResult" class="card" style="display:none">
       <div class="result-title"></div>
@@ -486,31 +487,60 @@ function initImport() {
 let pendingData = null;
 
 function processFile(file) {
+  const isXLSX = file.name.endsWith('.xlsx');
   const reader = new FileReader();
   reader.onload = () => {
-    const buf = reader.result;
-    // Try UTF-8 first, then GBK
-    let text = '';
-    let tried = [];
-    try { text = new TextDecoder('utf-8').decode(buf); tried.push('UTF-8'); } catch(e) {}
-    if (!text.includes('交易时间')) {
+    let text;
+    if (isXLSX) {
+      // Parse xlsx with SheetJS
       try {
-        const gbkText = new TextDecoder('gbk').decode(buf);
-        if (gbkText.includes('交易时间')) { text = gbkText; tried.push('GBK'); }
-      } catch(e) {}
-    }
-    if (!text.includes('交易时间')) {
-      try {
-        const gbText = new TextDecoder('gb2312').decode(buf);
-        if (gbText.includes('交易时间')) { text = gbText; tried.push('GB2312'); }
-      } catch(e) {}
-    }
-
-    if (!text || !text.includes('交易时间')) {
-      // Show first 200 chars to help debug
-      const preview = (text || '').slice(0, 200);
-      toast('无法识别文件格式(tried: ' + tried.join(',') + ') 前200字符: ' + preview);
-      return;
+        const wb = XLSX.read(reader.result, { type: 'array' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        // Find header row (contains 交易时间)
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+        let headerRow = -1;
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i].map(c => String(c));
+          if (r.some(c => c.includes('交易时间'))) { headerRow = i; break; }
+        }
+        if (headerRow < 0) { toast('未找到表头（交易时间）'); return; }
+        // Rebuild CSV-like text from rows
+        const header = rows[headerRow].map(c => String(c)).join(',');
+        const dataLines = [header];
+        for (let i = headerRow + 1; i < rows.length; i++) {
+          const line = rows[i].map(c => {
+            let v = String(c);
+            if (v.includes(',') || v.includes('"')) v = '"' + v.replace(/"/g, '""') + '"';
+            return v;
+          }).join(',');
+          if (rows[i].some(c => String(c).trim())) dataLines.push(line);
+        }
+        text = dataLines.join('\n');
+      } catch (err) {
+        toast('Excel 解析失败: ' + err.message);
+        return;
+      }
+    } else {
+      // CSV parsing with encoding detection
+      const buf = reader.result;
+      let tried = [];
+      try { text = new TextDecoder('utf-8').decode(buf); tried.push('UTF-8'); } catch(e) {}
+      if (!text.includes('交易时间')) {
+        try {
+          const gbkText = new TextDecoder('gbk').decode(buf);
+          if (gbkText.includes('交易时间')) { text = gbkText; tried.push('GBK'); }
+        } catch(e) {}
+      }
+      if (!text.includes('交易时间')) {
+        try {
+          const gbText = new TextDecoder('gb2312').decode(buf);
+          if (gbText.includes('交易时间')) { text = gbText; tried.push('GB2312'); }
+        } catch(e) {}
+      }
+      if (!text || !text.includes('交易时间')) {
+        toast('无法识别文件格式(tried: ' + tried.join(',') + ') 前200字符: ' + (text || '').slice(0, 200));
+        return;
+      }
     }
 
     try {
@@ -525,7 +555,9 @@ function processFile(file) {
       toast('解析失败: ' + err.message);
     }
   };
-  reader.readAsArrayBuffer(file);
+
+  if (isXLSX) reader.readAsArrayBuffer(file);
+  else reader.readAsArrayBuffer(file);
 }
 
 async function doImport() {
