@@ -242,7 +242,9 @@ function parseCSV(text) {
   const headerIdx = detectHeader(lines);
   if (!headerIdx) throw new Error('无法识别账单格式，请确认是微信或支付宝导出的 CSV 文件');
   const header = lines[headerIdx];
-  const source = header.includes('交易单号') ? 'wechat' : 'alipay';
+  const source = header.includes('商户单号') ? 'wechat' :
+                 header.includes('商家订单号') ? 'alipay' :
+                 header.includes('交易单号') ? 'wechat' : 'alipay';
   const rows = [];
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const cols = splitCSV(lines[i]);
@@ -481,8 +483,32 @@ let pendingData = null;
 function processFile(file) {
   const reader = new FileReader();
   reader.onload = () => {
+    const buf = reader.result;
+    // Try UTF-8 first, then GBK
+    let text = '';
+    let tried = [];
+    try { text = new TextDecoder('utf-8').decode(buf); tried.push('UTF-8'); } catch(e) {}
+    if (!text.includes('交易时间')) {
+      try {
+        const gbkText = new TextDecoder('gbk').decode(buf);
+        if (gbkText.includes('交易时间')) { text = gbkText; tried.push('GBK'); }
+      } catch(e) {}
+    }
+    if (!text.includes('交易时间')) {
+      try {
+        const gbText = new TextDecoder('gb2312').decode(buf);
+        if (gbText.includes('交易时间')) { text = gbText; tried.push('GB2312'); }
+      } catch(e) {}
+    }
+
+    if (!text || !text.includes('交易时间')) {
+      const preview = (text || '').slice(0, 200);
+      toast('无法识别文件格式(tried: ' + tried.join(',') + ') 前200字符: ' + preview);
+      return;
+    }
+
     try {
-      const result = parseCSV(reader.result);
+      const result = parseCSV(text);
       pendingData = result;
       const incomeCount = result.rows.filter(r => r.type === '收入').length;
       const expenseCount = result.rows.filter(r => r.type === '支出').length;
@@ -493,7 +519,7 @@ function processFile(file) {
       toast('解析失败: ' + err.message);
     }
   };
-  reader.readAsText(file);
+  reader.readAsArrayBuffer(file);
 }
 
 async function doImport() {
